@@ -29,6 +29,8 @@ type PluginOptions = Options & {
  * @param {string} html - The original HTML of the page
  * @param {string} version - The hash of the current commit
  * @param {Options} options - Options
+ * @param cssFileHash
+ * @param jsFileHash
  * @returns The html of the page with the injected script and css.
  */
 function injectPluginHtml(
@@ -44,18 +46,57 @@ function injectPluginHtml(
   let res = html
 
   res = res.replace(
-    '</body>',
-      `
-        ${cssLinkHtml}
-        <script defer src="${injectFileBase}${DIRECTORY_NAME}/${INJECT_SCRIPT_FILE_NAME}.${jsFileHash}.js"></script>
-        ${versionScript}
-        </body>
-      `,
+    '<head>',
+    `<head>
+    ${cssLinkHtml}
+    <script src="${injectFileBase}${DIRECTORY_NAME}/${INJECT_SCRIPT_FILE_NAME}.${jsFileHash}.js"></script>
+    ${versionScript}`,
   )
 
-  if (!hiddenDefaultNotification) {
+  if (!hiddenDefaultNotification)
     res = res.replace('</body>', `<div class="${NOTIFICATION_ANCHOR_CLASS_NAME}"></div></body>`)
-  }
+
+  return res
+}
+
+/**
+ * It injects the hash into the HTML, and injects the notification anchor and the stylesheet and the
+ * script into the HTML
+ * @param {string} html - The original HTML of the page
+ * @param {string} version - The hash of the current commit
+ * @param {Options} options - Options
+ * @param injectStyleContent
+ * @param injectScriptContent
+ * @returns The html of the page with the injected script and css.
+ */
+function injectPluginHTMLInline(html: string, version: string, options: Options, {
+  injectStyleContent,
+  injectScriptContent,
+}: { injectStyleContent: string; injectScriptContent: string }) {
+  const { customNotificationHTML, hiddenDefaultNotification } = options
+
+  const versionScript = `<script>window.pluginWebUpdateNotice_version = '${version}';</script>`
+
+  let pluginStyle: string
+  if (customNotificationHTML || hiddenDefaultNotification)
+    pluginStyle = ''
+  else
+    pluginStyle = `<style>${injectStyleContent}</style>`
+
+  let res = html
+
+  const pluginScript = `<script>${injectScriptContent}</script>`
+
+  res = res.replace(
+    '<head>',
+    `<head>
+        ${pluginStyle}
+        ${pluginScript}
+        ${versionScript}`,
+  )
+
+  if (!hiddenDefaultNotification)
+    res = res.replace('</body>', `<div class="${NOTIFICATION_ANCHOR_CLASS_NAME}"></div></body>`)
 
   return res
 }
@@ -72,17 +113,25 @@ class WebUpdateNotificationPlugin {
     let jsFileHash = ''
     /** inject css file hash */
     let cssFileHash = ''
+    // inject script file content
+    let injectScriptContent = ''
+    // inject css file content
+    let injectStyleContent = ''
 
     const { publicPath } = compiler.options.output
     if (this.options.injectFileBase === undefined)
       this.options.injectFileBase = typeof publicPath === 'string' ? publicPath : '/'
 
-    const { hiddenDefaultNotification, versionType, indexHtmlFilePath, customVersion, silence } = this.options
+    const {
+      hiddenDefaultNotification,
+      versionType,
+      indexHtmlFilePath,
+      customVersion,
+      silence,
+      microApp,
+    } = this.options
     let version = ''
-    if (versionType === 'custom')
-      version = getVersion(versionType, customVersion!)
-    else
-      version = getVersion(versionType!)
+    version = versionType === 'custom' ? getVersion(versionType, customVersion!) : getVersion(versionType!)
 
     compiler.hooks.emit.tap(pluginName, (compilation: Compilation) => {
       // const outputPath = compiler.outputPath
@@ -93,7 +142,7 @@ class WebUpdateNotificationPlugin {
         size: () => jsonFileContent.length,
       }
       if (!hiddenDefaultNotification) {
-        const injectStyleContent = readFileSync(`${get__Dirname()}/${INJECT_STYLE_FILE_NAME}.css`, 'utf8')
+        injectStyleContent = readFileSync(`${get__Dirname()}/${INJECT_STYLE_FILE_NAME}.css`, 'utf8')
         cssFileHash = getFileHash(injectStyleContent)
 
         // @ts-expect-error
@@ -104,7 +153,7 @@ class WebUpdateNotificationPlugin {
       }
 
       const filePath = resolve(`${get__Dirname()}/${INJECT_SCRIPT_FILE_NAME}.js`)
-      const injectScriptContent = generateJsFileContent(
+      injectScriptContent = generateJsFileContent(
         readFileSync(filePath, 'utf8').toString(),
         version,
         this.options,
@@ -124,15 +173,13 @@ class WebUpdateNotificationPlugin {
         accessSync(htmlFilePath, constants.F_OK)
 
         let html = readFileSync(htmlFilePath, 'utf8')
-        html = injectPluginHtml(
-          html,
-          version,
-          this.options,
-          {
-            jsFileHash,
-            cssFileHash,
-          },
-        )
+        // micro-app environment will inject script into index.html
+        if (microApp)
+          html = injectPluginHTMLInline(html, version, this.options, { injectStyleContent, injectScriptContent })
+        // normal environment
+        else
+          html = injectPluginHtml(html, version, this.options, { jsFileHash, cssFileHash })
+
         writeFileSync(htmlFilePath, html)
       }
       catch (error) {
